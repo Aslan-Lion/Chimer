@@ -1,0 +1,38 @@
+# Single-machine deployment for the app.timer online relay.
+#
+# This describes how to run the relay on a host you own. Nothing has been
+# deployed by this milestone: there is no hosting provider, domain or
+# certificate here, and the relay will not start until you supply yours.
+#
+# Usage:
+#   1. cp .env.example relay.env      and fill in the placeholders
+#   2. put your certificate at ./tls/fullchain.pem and ./tls/privkey.pem
+#   3. docker compose up --build
+#
+# `relay.env` holds secrets. Keep it out of version control.
+
+services:
+  relay:
+    build:
+      # The image needs both the relay crate and the frontend it serves, so the
+      # context is the repository root rather than this directory.
+      context: ..
+      dockerfile: relay/Dockerfile
+    image: app-timer-relay:local
+    restart: unless-stopped
+
+    # All configuration, including host credentials, comes from the environment.
+    # The relay persists nothing.
+    env_file:
+      - relay.env
+
+    ports:
+      - "8443:8443"
+
+    volumes:
+      # TLS material, read-only. Point these paths at your own certificate.
+      - ./tls:/etc/relay/tls:ro
+
+    # The relay expects SIGTERM to shut down gracefully, which is Docker's
+    # default stop signal. Give it a moment to tell connected clients why.
+    stop_grace_period: 10s

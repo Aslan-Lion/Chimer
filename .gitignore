@@ -1,0 +1,61 @@
+﻿# Dependencies
+node_modules/
+
+# Frontend build output
+dist/
+dist-ssr/
+
+# Rust build output
+target/
+src-tauri/target/
+relay/target/
+
+# Local application/runtime data
+.webview2-data/
+.wsprobe/
+
+# Environment files and secrets
+.env
+.env.*
+!.env.example
+relay/.env
+relay/.env.*
+!relay/.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local configuration
+*.local
+*.user
+*.cache
+
+# Editor and operating system files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Generated files
+*.tmp
+*.bak
+*.old
+
+# Relay secrets and generated certificates
+relay.env
+**/relay.env
+*.key
+*.p12
+*.pfx

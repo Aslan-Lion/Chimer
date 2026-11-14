@@ -1,0 +1,67 @@
+[package]
+name = "app-timer"
+version = "0.1.0"
+description = "app.timer — timer management and presentation for Windows"
+authors = ["app.timer"]
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "app_timer_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+sha1 = "0.10"
+sha2 = "0.10"
+getrandom = "0.3"
+base64 = "0.22"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+local-ip-address = "0.6"
+snow = "0.10.0"
+hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "chacha", "getrandom", "hkdfsha2", "x25519"] }
+zeroize = { version = "1.9.1", features = ["zeroize_derive"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12", "logging"] }
+rustls-platform-verifier = "0.7.1"
+rustls-pemfile = "2.2.0"
+webpki-roots = "1.0.12"
+
+[dev-dependencies]
+# Test-only: mints a throwaway self-signed certificate so the TLS client config
+# can be shown to refuse a certificate the operating system does not trust.
+rcgen = "0.14"
+
+[features]
+# Tauri compiles in production mode only when the `tauri/custom-protocol` feature is enabled:
+# `tauri`'s build script then emits `cargo:dev=false` and the binary serves the embedded
+# `build.frontendDist` bundle instead of `build.devUrl` (http://localhost:1420).
+#
+# `tauri build` enables this automatically (it runs
+# `cargo build --bins --features tauri/custom-protocol --release`), so this alias is not
+# strictly required. It is kept so that a manual
+# `cargo build --release --features custom-protocol` produces the same production binary.
+#
+# WARNING: a plain `cargo build --release` (no `--features`) does NOT enable it and produces a
+# dev binary that tries to reach http://localhost:1420 and fails with ERR_CONNECTION_REFUSED.
+custom-protocol = ["tauri/custom-protocol"]
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", default-features = false, features = ["Win32_Security_Cryptography", "Win32_Foundation"] }
