@@ -10,6 +10,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     startupBehaviour: "dashboard",
     defaultTimerFormat: "hh:mm:ss",
     confirmBeforeStopping: true,
+    timerAdjustmentMinutes: 1,
   },
   appearance: {
     accentColor: "#8B9DFF",
@@ -48,8 +49,20 @@ function mergeSettings(stored: Partial<AppSettings>): AppSettings {
       ? notifications.completionSound
       : DEFAULT_SETTINGS.notifications.completionSound;
 
+  const adjustmentMinutes = stored.general?.timerAdjustmentMinutes;
+  const allowedAdjustmentMinutes = [1, 2, 5, 10, 15, 30, 60];
+
   return {
-    general: { ...DEFAULT_SETTINGS.general, ...stored.general },
+    general: {
+      ...DEFAULT_SETTINGS.general,
+      ...stored.general,
+      timerAdjustmentMinutes:
+        typeof adjustmentMinutes === "number" &&
+        Number.isFinite(adjustmentMinutes) &&
+        allowedAdjustmentMinutes.includes(adjustmentMinutes)
+          ? adjustmentMinutes
+          : DEFAULT_SETTINGS.general.timerAdjustmentMinutes,
+    },
     appearance: { ...DEFAULT_SETTINGS.appearance, ...stored.appearance },
     display: {
       defaultMonitorKey:

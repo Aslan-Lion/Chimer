@@ -9,6 +9,7 @@ export interface GeneralSettings {
   startupBehaviour: StartupBehaviour;
   defaultTimerFormat: TimerFormat;
   confirmBeforeStopping: boolean;
+  timerAdjustmentMinutes: number;
 }
 
 export interface AppearanceSettings {

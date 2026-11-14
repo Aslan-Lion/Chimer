@@ -2,6 +2,7 @@ import type { TimerSnapshot } from "../types";
 import { createStore } from "./createStore";
 import {
   abortTimer as abortRemoteTimer,
+  adjustTimer as adjustRemoteTimer,
   createTimer as createRemoteTimer,
   getTimerSnapshot,
   onTimerState,
@@ -127,4 +128,8 @@ export function abortActiveTimer(): Promise<boolean> {
 
 export function stopActiveTimer(): Promise<boolean> {
   return run(stopRemoteTimer);
+}
+
+export function adjustActiveTimer(deltaMs: number): Promise<boolean> {
+  return run(() => adjustRemoteTimer(deltaMs));
 }

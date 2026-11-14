@@ -75,6 +75,7 @@ pub fn run() {
             timer::commands::timer_reset,
             timer::commands::timer_abort,
             timer::commands::timer_stop,
+            timer::commands::timer_adjust,
             session::commands::session_snapshot,
             session::commands::session_start,
             session::commands::session_next,

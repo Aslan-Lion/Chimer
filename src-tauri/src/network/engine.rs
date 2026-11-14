@@ -1130,22 +1130,20 @@ impl NetworkEngine {
 
         // --- 4. Revocation check on the device static key ---
         {
-            let inner = self.inner();
+            let mut inner = self.inner();
             if inner.devices.is_revoked_key(&opened.device_static_pk) {
-                let mut inner2 = self.inner();
-                inner2.pending.remove(request_id);
-                inner2.online_pairing.release(request_id);
+                inner.pending.remove(request_id);
+                inner.online_pairing.release(request_id);
                 return Err("This device has been revoked.".to_string());
             }
         }
 
         // --- 5. Duplicate-approval check: device_static_pk must not already be paired ---
         {
-            let inner = self.inner();
+            let mut inner = self.inner();
             if inner.devices.get_by_static_pk(&opened.device_static_pk).is_some() {
-                let mut inner2 = self.inner();
-                inner2.pending.remove(request_id);
-                inner2.online_pairing.release(request_id);
+                inner.pending.remove(request_id);
+                inner.online_pairing.release(request_id);
                 return Err(
                     "A device with this static key is already paired.".to_string(),
                 );
@@ -3161,6 +3159,8 @@ use std::net::Ipv4Addr;
     /// `pending` (bypassing the HPKE layer, which has its own test suite).
     fn inject_pending_online(engine: &NetworkEngine, opened: &OpenedRequest) {
         let now = crate::timer::engine::wall_now_ms();
+        let mut opened_for_pending = opened.clone();
+        opened_for_pending.opened_at = now;
         let request = PairingRequest {
             request_id: opened.enc.clone(),
             name: opened.device_name.clone(),
@@ -3174,7 +3174,7 @@ use std::net::Ipv4Addr;
             device_fingerprint: None,
         };
         let mut inner = engine.inner();
-        inner.pending_online.insert(opened.clone()).unwrap();
+        inner.pending_online.insert(opened_for_pending).unwrap();
         inner.pending.insert(
             opened.enc.clone(),
             PendingRequest {

@@ -13,6 +13,9 @@
 
 use std::time::Instant;
 
+/// Maximum supported timer and adjustment length: 99 hours, matching creation limits.
+pub const MAX_TIMER_MS: i64 = 99 * 60 * 60 * 1_000;
+
 use serde::{Deserialize, Serialize};
 
 /// The five states a single timer can be in.
@@ -143,6 +146,10 @@ impl TimerMachine {
         }
     }
 
+    pub fn status(&self) -> TimerStatus {
+        self.status
+    }
+
     /// Rebuilds a machine from a persisted record.
     ///
     /// A record that cannot describe a usable timer (no identity, no positive
@@ -159,7 +166,7 @@ impl TimerMachine {
             name: record.name,
             duration_ms,
             status: record.status,
-            remaining_ms: record.remaining_ms.clamp(0, duration_ms),
+            remaining_ms: record.remaining_ms.clamp(0, MAX_TIMER_MS),
             anchor: None,
             started_at: record.started_at,
             completed_at: record.completed_at,
@@ -417,6 +424,85 @@ impl TimerMachine {
         Ok(())
     }
 
+    /// Adds or subtracts time while running, paused or completed. The signed
+    /// delta is validated here as well as at the IPC boundary because this is
+    /// the authoritative state transition.
+    pub fn adjust(
+        &mut self,
+        delta_ms: i64,
+        mono_now: Instant,
+        wall_now: i64,
+    ) -> Result<(), String> {
+        let magnitude = delta_ms
+            .checked_abs()
+            .ok_or_else(|| "Timer adjustment is outside the supported range.".to_string())?;
+        if magnitude == 0 || magnitude > MAX_TIMER_MS {
+            return Err("Timer adjustment must be between 1 ms and 99 hours.".to_string());
+        }
+        if !matches!(
+            self.status,
+            TimerStatus::Running | TimerStatus::Paused | TimerStatus::Completed
+        ) {
+            return Err("Only a running, paused or completed timer can be adjusted.".to_string());
+        }
+
+        if self.status == TimerStatus::Completed {
+            let overtime = self.overtime_at(wall_now);
+            self.anchor = None;
+            self.deadline_at = None;
+
+            if delta_ms > 0 {
+                self.remaining_ms = delta_ms;
+                self.status = TimerStatus::Paused;
+                self.completed_at = None;
+            } else if magnitude <= overtime {
+                self.completed_at = Some(
+                    self.completed_at
+                        .expect("completed timers have a completion timestamp")
+                        + magnitude,
+                );
+            } else {
+                self.remaining_ms = magnitude - overtime;
+                self.status = TimerStatus::Paused;
+                self.completed_at = None;
+            }
+
+            self.touch(wall_now);
+            return Ok(());
+        }
+
+        let remaining = self.remaining_at(mono_now);
+        let adjusted = remaining
+            .checked_add(delta_ms)
+            .ok_or_else(|| "Timer adjustment would overflow.".to_string())?;
+        if adjusted > MAX_TIMER_MS {
+            return Err("Remaining time cannot exceed 99 hours.".to_string());
+        }
+        let deadline = if self.status == TimerStatus::Running {
+            Some(
+                wall_now
+                    .checked_add(adjusted.max(0))
+                    .ok_or_else(|| "Timer deadline would overflow.".to_string())?,
+            )
+        } else {
+            None
+        };
+
+        self.remaining_ms = adjusted.max(0);
+        if self.status == TimerStatus::Running {
+            self.anchor = Some(mono_now);
+            self.deadline_at = deadline;
+        }
+        if self.remaining_ms == 0 {
+            self.status = TimerStatus::Completed;
+            self.anchor = None;
+            self.deadline_at = None;
+            self.completed_at = Some(wall_now);
+        }
+        self.touch(wall_now);
+        Ok(())
+    }
+
     // ----------------------------------------------------------------- internals
 
     /// Arms the countdown from the current remaining time.
@@ -469,6 +555,18 @@ mod tests {
             .create("Examination".to_string(), duration_ms, wall_now)
             .expect("a positive duration is valid");
         machine
+    }
+
+    fn completed_machine(overtime_ms: i64) -> (TimerMachine, Instant, i64) {
+        let start = origin();
+        let duration_ms = 60 * SECOND;
+        let mut machine = machine(duration_ms, 0);
+        machine.start(start, 0).unwrap();
+
+        let completed_at = start + Duration::from_millis(duration_ms as u64);
+        assert!(machine.settle(completed_at, duration_ms));
+
+        (machine, completed_at, duration_ms + overtime_ms)
     }
 
     /// A record is only ever built through the machine, so the tests exercise
@@ -971,5 +1069,178 @@ mod tests {
         assert_eq!(snapshot.status, TimerStatus::Idle);
         assert_eq!(snapshot.remaining_ms, 90 * SECOND);
         assert_eq!(snapshot.overtime_ms, 0);
+    }
+
+    #[test]
+    fn running_timer_adjustments_move_the_deadline_and_keep_progress_consistent() {
+        let start = origin();
+        let mut machine = machine(100 * SECOND, 10_000);
+        machine.start(start, 10_000).unwrap();
+
+        machine
+            .adjust(20 * SECOND, start + Duration::from_secs(10), 20_000)
+            .unwrap();
+        let increased = machine.snapshot(start + Duration::from_secs(10), 20_000);
+        assert_eq!(increased.status, TimerStatus::Running);
+        assert_eq!(increased.remaining_ms, 110 * SECOND);
+        assert_eq!(machine.deadline_at, Some(130_000));
+        assert_eq!(increased.progress, 0.0);
+
+        machine
+            .adjust(-30 * SECOND, start + Duration::from_secs(10), 20_000)
+            .unwrap();
+        let decreased = machine.snapshot(start + Duration::from_secs(10), 20_000);
+        assert_eq!(decreased.remaining_ms, 80 * SECOND);
+        assert_eq!(machine.deadline_at, Some(100_000));
+        assert!((decreased.progress - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn paused_timer_adjustments_change_frozen_remaining_without_resuming() {
+        let start = origin();
+        let mut machine = machine(100 * SECOND, 0);
+        machine.start(start, 0).unwrap();
+        machine
+            .pause(start + Duration::from_secs(10), 10_000)
+            .unwrap();
+
+        machine
+            .adjust(5 * SECOND, start + Duration::from_secs(20), 20_000)
+            .unwrap();
+        assert_eq!(machine.status(), TimerStatus::Paused);
+        assert_eq!(
+            machine
+                .snapshot(start + Duration::from_secs(30), 30_000)
+                .remaining_ms,
+            95 * SECOND
+        );
+        assert_eq!(machine.deadline_at, None);
+
+        machine
+            .adjust(-15 * SECOND, start + Duration::from_secs(30), 30_000)
+            .unwrap();
+        let snapshot = machine.snapshot(start + Duration::from_secs(40), 40_000);
+        assert_eq!(snapshot.status, TimerStatus::Paused);
+        assert_eq!(snapshot.remaining_ms, 80 * SECOND);
+        assert!((snapshot.progress - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn increasing_a_completed_timer_pauses_it_with_zero_overtime() {
+        let (mut machine, now, wall_now) = completed_machine(3 * 60 * SECOND);
+
+        machine.adjust(5 * 60 * SECOND, now, wall_now).unwrap();
+
+        let snapshot = machine.snapshot(now, wall_now);
+        assert_eq!(snapshot.status, TimerStatus::Paused);
+        assert_eq!(snapshot.remaining_ms, 5 * 60 * SECOND);
+        assert_eq!(snapshot.overtime_ms, 0);
+        assert_eq!(snapshot.completed_at, None);
+        assert_eq!(machine.deadline_at, None);
+
+        let restored = TimerMachine::restore(record_of(&machine, now), now, wall_now);
+        let restored_snapshot = restored.snapshot(now, wall_now);
+        assert_eq!(restored_snapshot.status, TimerStatus::Paused);
+        assert_eq!(restored_snapshot.remaining_ms, 5 * 60 * SECOND);
+    }
+
+    #[test]
+    fn decreasing_a_completed_timer_reduces_overtime_first() {
+        let (mut machine, now, wall_now) = completed_machine(3 * 60 * SECOND);
+
+        machine.adjust(-60 * SECOND, now, wall_now).unwrap();
+
+        let snapshot = machine.snapshot(now, wall_now);
+        assert_eq!(snapshot.status, TimerStatus::Completed);
+        assert_eq!(snapshot.remaining_ms, 0);
+        assert_eq!(snapshot.overtime_ms, 2 * 60 * SECOND);
+        assert_eq!(snapshot.completed_at, Some(wall_now - 2 * 60 * SECOND));
+    }
+
+    #[test]
+    fn decreasing_completed_timer_by_exact_overtime_keeps_it_completed_at_zero() {
+        let (mut machine, now, wall_now) = completed_machine(3 * 60 * SECOND);
+
+        machine.adjust(-3 * 60 * SECOND, now, wall_now).unwrap();
+
+        let snapshot = machine.snapshot(now, wall_now);
+        assert_eq!(snapshot.status, TimerStatus::Completed);
+        assert_eq!(snapshot.remaining_ms, 0);
+        assert_eq!(snapshot.overtime_ms, 0);
+        assert_eq!(snapshot.completed_at, Some(wall_now));
+    }
+
+    #[test]
+    fn decreasing_completed_timer_past_overtime_pauses_with_excess_remaining() {
+        let (mut machine, now, wall_now) = completed_machine(3 * 60 * SECOND);
+
+        machine.adjust(-5 * 60 * SECOND, now, wall_now).unwrap();
+
+        let snapshot = machine.snapshot(now, wall_now);
+        assert_eq!(snapshot.status, TimerStatus::Paused);
+        assert_eq!(snapshot.remaining_ms, 2 * 60 * SECOND);
+        assert_eq!(snapshot.overtime_ms, 0);
+        assert_eq!(snapshot.completed_at, None);
+        assert_eq!(machine.deadline_at, None);
+
+        let restored = TimerMachine::restore(record_of(&machine, now), now, wall_now);
+        let restored_snapshot = restored.snapshot(now, wall_now);
+        assert_eq!(restored_snapshot.status, TimerStatus::Paused);
+        assert_eq!(restored_snapshot.remaining_ms, 2 * 60 * SECOND);
+    }
+
+    #[test]
+    fn reducing_a_running_or_paused_timer_to_zero_completes_it() {
+        let start = origin();
+        let mut running = machine(10 * SECOND, 0);
+        running.start(start, 0).unwrap();
+        running.adjust(-10 * SECOND, start, 0).unwrap();
+        let completed = running.snapshot(start, 0);
+        assert_eq!(completed.status, TimerStatus::Completed);
+        assert_eq!(completed.remaining_ms, 0);
+        assert_eq!(completed.progress, 1.0);
+        assert_eq!(completed.completed_at, Some(0));
+        assert_eq!(running.deadline_at, None);
+
+        let mut paused = machine(10 * SECOND, 0);
+        paused.start(start, 0).unwrap();
+        paused.pause(start, 0).unwrap();
+        paused.adjust(-10 * SECOND, start, 7).unwrap();
+        assert_eq!(paused.status(), TimerStatus::Completed);
+        assert_eq!(paused.snapshot(start, 7).completed_at, Some(7));
+    }
+
+    #[test]
+    fn invalid_adjustments_and_states_are_rejected_without_mutating_the_timer() {
+        let now = origin();
+        let mut idle = machine(10 * SECOND, 0);
+        let idle_before = idle.snapshot(now, 0);
+        for delta in [0, i64::MIN, MAX_TIMER_MS + 1] {
+            assert!(idle.adjust(delta, now, 0).is_err());
+        }
+        assert!(idle.adjust(1, now, 0).is_err());
+        assert_eq!(idle.status(), TimerStatus::Idle);
+        assert_eq!(idle.snapshot(now, 0), idle_before);
+
+        idle.start(now, 0).unwrap();
+        idle.pause(now, 0).unwrap();
+        let before = idle.snapshot(now, 0);
+        assert!(idle.adjust(MAX_TIMER_MS, now, 1).is_err());
+        assert_eq!(idle.snapshot(now, 0), before);
+        idle.adjust(-20 * SECOND, now, 1).unwrap();
+        assert_eq!(idle.status(), TimerStatus::Completed);
+        idle.adjust(SECOND, now, 2)
+            .expect("completed timers can be adjusted into a paused countdown");
+        let adjusted_completed = idle.snapshot(now, 2);
+        assert_eq!(adjusted_completed.status, TimerStatus::Paused);
+        assert_eq!(adjusted_completed.remaining_ms, SECOND);
+        assert_eq!(adjusted_completed.overtime_ms, 0);
+
+        let mut stopped = machine(10 * SECOND, 0);
+        stopped.start(now, 0).unwrap();
+        stopped.stop(now, 1).unwrap();
+        let stopped_before = stopped.snapshot(now, 1);
+        assert!(stopped.adjust(SECOND, now, 2).is_err());
+        assert_eq!(stopped.snapshot(now, 2), stopped_before);
     }
 }

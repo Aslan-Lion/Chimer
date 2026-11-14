@@ -3,6 +3,7 @@ import { formatDuration } from "../../lib/time";
 import { settingsStore } from "../../stores/settingsStore";
 import {
   abortActiveTimer,
+  adjustActiveTimer,
   pauseActiveTimer,
   resumeActiveTimer,
   startActiveTimer,
@@ -81,6 +82,12 @@ export function ActiveTimerCard() {
           <TimerControls
             status={status}
             busy={busy}
+            adjustmentLabel={`${settings.general.timerAdjustmentMinutes} min`}
+            onAdjust={(direction) =>
+              void adjustActiveTimer(
+                direction * settings.general.timerAdjustmentMinutes * 60_000,
+              )
+            }
             onStart={status === "idle" || status === "stopped" ? () => void startActiveTimer() : undefined}
             onPause={status === "running" ? () => void pauseActiveTimer() : undefined}
             onResume={status === "paused" ? () => void resumeActiveTimer() : undefined}

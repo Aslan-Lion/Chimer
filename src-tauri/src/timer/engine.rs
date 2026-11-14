@@ -133,6 +133,12 @@ impl TimerEngine {
         self.apply(app, |machine, now, wall| machine.stop(now, wall))
     }
 
+    /// Adjusts remaining time on the authoritative machine and synchronizes
+    /// the resulting snapshot to both application windows.
+    pub fn adjust(&self, app: &AppHandle, delta_ms: i64) -> Result<TimerSnapshot, String> {
+        self.apply(app, move |machine, now, wall| machine.adjust(delta_ms, now, wall))
+    }
+
     /// Current authoritative snapshot, without broadcasting.
     ///
     /// Used to answer a window that has explicitly asked for the latest state —
@@ -170,7 +176,27 @@ impl TimerEngine {
     where
         F: FnOnce(&mut TimerMachine, Instant, i64) -> Result<(), String>,
     {
-        let (snapshot, completed) = self.transact(action)?;
+        // Keep an unsettled view so a command that arrives exactly at the
+        // deadline can still publish the completion that `transact` settles
+        // before rejecting the command (for example, an adjustment after zero).
+        let before = {
+            let now = Instant::now();
+            self.machine().snapshot(now, wall_now_ms())
+        };
+        let (snapshot, completed) = match self.transact(action) {
+            Ok(result) => result,
+            Err(error) => {
+                let after = {
+                    let now = Instant::now();
+                    self.machine().snapshot(now, wall_now_ms())
+                };
+                if before.status == TimerStatus::Running && after.status == TimerStatus::Completed {
+                    events::emit_state(app, &after);
+                    events::emit_completed(app, &after);
+                }
+                return Err(error);
+            }
+        };
         events::emit_state(app, &snapshot);
         if completed {
             events::emit_completed(app, &snapshot);
@@ -193,11 +219,19 @@ impl TimerEngine {
 
         let (outcome, completed, snapshot, record) = {
             let mut machine = self.machine();
-            let completed = machine.settle(now, wall);
+            let completed_before = machine.settle(now, wall);
+            let previous_status = machine.status();
             let outcome = action(&mut machine, now, wall);
+            let completed_after = if outcome.is_ok() {
+                let settled = machine.settle(now, wall);
+                settled || (previous_status != TimerStatus::Completed
+                    && machine.status() == TimerStatus::Completed)
+            } else {
+                false
+            };
             (
                 outcome,
-                completed,
+                completed_before || completed_after,
                 machine.snapshot(now, wall),
                 machine.to_record(now),
             )
@@ -300,6 +334,33 @@ mod tests {
         assert_eq!(persisted.status, TimerStatus::Running);
         // A running timer is recovered from its deadline rather than a counter.
         assert!(persisted.deadline_at.is_some());
+
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn adjusted_timer_deadline_and_remaining_time_are_written_through() {
+        let path = scratch("adjust-write-through");
+        let engine = engine_at(path.clone());
+        engine
+            .transact(|machine, _now, wall| {
+                machine.create("Exam".to_string(), 90 * SECOND, wall)
+            })
+            .unwrap();
+        engine
+            .transact(|machine, now, wall| machine.start(now, wall))
+            .unwrap();
+        engine
+            .transact(|machine, now, wall| machine.adjust(30 * SECOND, now, wall))
+            .unwrap();
+
+        let persisted = persistence::load(&path).expect("the adjusted state was persisted");
+        assert_eq!(persisted.status, TimerStatus::Running);
+        assert!(persisted.remaining_ms > 90 * SECOND);
+        assert_eq!(
+            persisted.deadline_at,
+            Some(persisted.updated_at + persisted.remaining_ms)
+        );
 
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }

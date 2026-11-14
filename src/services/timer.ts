@@ -72,6 +72,15 @@ export async function stopTimer(): Promise<TimerSnapshot> {
   return invoke<TimerSnapshot>("timer_stop");
 }
 
+/** Adjusts the active timer through the authoritative Rust state machine. */
+export async function adjustTimer(deltaMs: number): Promise<TimerSnapshot> {
+  requireEngine();
+  if (!Number.isSafeInteger(deltaMs) || deltaMs === 0) {
+    throw new Error("Timer adjustment must be a non-zero whole number of milliseconds.");
+  }
+  return invoke<TimerSnapshot>("timer_adjust", { deltaMs });
+}
+
 /** Fires on every authoritative timer update from Rust. */
 export function onTimerState(
   handler: (snapshot: TimerSnapshot) => void,

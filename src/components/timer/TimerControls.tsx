@@ -15,6 +15,8 @@ export interface TimerControlsProps {
   onStop?: () => void;
   /** Aborts the timer: the engine discards it and returns to its idle state. */
   onAbort?: () => void;
+  onAdjust?: (delta: -1 | 1) => void;
+  adjustmentLabel?: string;
   /** Holds every control while a command is in flight. */
   busy?: boolean;
 }
@@ -26,13 +28,35 @@ export function TimerControls({
   onResume,
   onStop,
   onAbort,
+  onAdjust,
+  adjustmentLabel = "1 min",
   busy = false,
 }: TimerControlsProps) {
   const running = status === "running";
   const paused = status === "paused";
+  const canAdjust = running || paused || status === "completed";
 
   return (
     <div className="flex flex-wrap items-center gap-2">
+      <Button
+        aria-label={`Decrease remaining time by ${adjustmentLabel}`}
+        title={`Decrease remaining time by ${adjustmentLabel}`}
+        disabled={busy || !canAdjust || !onAdjust}
+        onClick={() => onAdjust?.(-1)}
+      >
+        −x
+      </Button>
+      <Button
+        aria-label={`Increase remaining time by ${adjustmentLabel}`}
+        title={`Increase remaining time by ${adjustmentLabel}`}
+        disabled={busy || !canAdjust || !onAdjust}
+        onClick={() => onAdjust?.(1)}
+      >
+        +x
+      </Button>
+      <span className="mr-1 text-[11px] text-text-faint" aria-live="polite">
+        {adjustmentLabel}
+      </span>
       {running ? (
         <Button
           variant="primary"

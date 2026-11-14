@@ -18,6 +18,7 @@ const SELECT_CLASS =
 const DENSITIES: InterfaceDensity[] = ["comfortable", "compact"];
 const STARTUP: StartupBehaviour[] = ["dashboard", "restore"];
 const FORMATS: TimerFormat[] = ["hh:mm:ss", "mm:ss"];
+const ADJUSTMENT_MINUTES = [1, 2, 5, 10, 15, 30, 60];
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -76,6 +77,24 @@ export default function SettingsPage() {
               {FORMATS.map((value) => (
                 <option key={value} value={value}>
                   {value}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Timer adjustment interval">
+            <select
+              value={settings.general.timerAdjustmentMinutes}
+              onChange={(event) =>
+                updateSettings("general", {
+                  timerAdjustmentMinutes: Number(event.currentTarget.value),
+                })
+              }
+              className={SELECT_CLASS}
+            >
+              {ADJUSTMENT_MINUTES.map((minutes) => (
+                <option key={minutes} value={minutes}>
+                  {minutes} {minutes === 1 ? "minute" : "minutes"}
                 </option>
               ))}
             </select>

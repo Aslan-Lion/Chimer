@@ -94,3 +94,13 @@ pub fn timer_stop(
 ) -> Result<TimerSnapshot, String> {
     engine.stop(&app)
 }
+
+/// Adds or subtracts milliseconds from a running, paused or completed timer.
+#[tauri::command]
+pub fn timer_adjust(
+    app: AppHandle,
+    engine: State<'_, TimerEngine>,
+    delta_ms: i64,
+) -> Result<TimerSnapshot, String> {
+    engine.adjust(&app, delta_ms)
+}
